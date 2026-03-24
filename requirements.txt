@@ -1,0 +1,24 @@
+# Distributed RAG System Requirements
+
+# Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+gradio==4.44.0
+
+# Embeddings
+sentence-transformers==3.3.1
+torch>=2.0.0
+numpy>=1.24.0
+
+# Database
+supabase==2.10.0
+
+# HTTP Requests
+requests==2.32.3
+
+# Data Processing
+pydantic==2.9.2
+
+# PDF Support
+PyPDF2==3.0.1
+
