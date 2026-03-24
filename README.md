@@ -25,7 +25,31 @@ OpenRouter API (LLM)
 1. **Cloudflare Worker** (`worker.js`) - Orchestrates document upload, chunk distribution, and query processing
 2. **Laptop Worker** (`laptop_worker.py`) - FastAPI server that generates embeddings and performs vector search
 3. **Gradio UI** (`gradio_ui.py`) - User interface for uploading documents and asking questions
-4. **Supabase** - Stores document chunks and embeddings
+4. **Supabase** - Stores document chunks and embeddings (cloud backend only)
+5. **Local orchestrator** (`local_orchestrator.py`) - Optional: same API as the Worker but uses **SQLite** on a LAN machine (no Supabase, no Cloudflare)
+
+### Local mode (optional — LAN lab, no Supabase)
+
+**Cloud stays the default.** The UI does **not** fall back to Local if Supabase or laptop env is wrong — you fix cloud config, or you **explicitly** choose Local (and optionally set `BACKEND_MODE=local` so the UI opens on that option).
+
+Use the **Orchestrator backend → Local LAN + SQLite** option in Gradio (or `BACKEND_MODE=local` in `.env`).
+
+```
+User (Gradio UI)
+    ↓
+local_orchestrator.py (FastAPI + SQLite on one machine)
+    ↓
+Laptop workers at LAN URLs (e.g. http://192.168.x.x:8000)
+    ↓
+LLM (OpenRouter / Gemini)
+```
+
+- On the machine running the orchestrator: `python local_orchestrator.py` (default `http://0.0.0.0:8788`). Point `LOCAL_ORCHESTRATOR_URL` in `.env` at it if needed.
+- On each GPU laptop: **leave `SUPABASE_URL` and `SUPABASE_KEY` unset** in `.env` so only `/generate-embeddings-local` is used. Same `laptop_worker.py` process.
+- In Gradio, paste **comma-separated LAN URLs** to each laptop (no ngrok required if the UI machine can reach them).
+- Chunk text lives in `local_rag.db` (gitignored). Embeddings stay in laptop RAM until restart (same idea as cloud, without DB persistence on laptops).
+
+Cloud mode (Worker + Supabase) stays the default and is unchanged.
 
 ## 🚀 Setup
 
@@ -125,6 +149,8 @@ Secrets are **not** in source code. Copy `.env.example` to `.env` in the project
 | `DEFAULT_LLM_PROVIDER` | No | `openrouter` or `gemini` — default tab in the UI |
 | `OPENROUTER_HTTP_REFERER` | No | Optional header for OpenRouter |
 | `OPENROUTER_X_TITLE` | No | Optional header for OpenRouter |
+| `BACKEND_MODE` | No | Omit or anything other than `local` → **cloud** default in UI. Set **`local` only** on purpose for LAN labs |
+| `LOCAL_ORCHESTRATOR_URL` | No | Default `http://127.0.0.1:8788` when using local backend |
 
 ### Laptop worker (`laptop_worker.py`)
 
@@ -135,6 +161,8 @@ Secrets are **not** in source code. Copy `.env.example` to `.env` in the project
 | `SUPABASE_TABLE` | No | Default `document_chunks` |
 | `EMBEDDING_MODEL` | No | Default `sentence-transformers/all-MiniLM-L6-v2` |
 | `EMBEDDING_DIM` | No | Default `384` (must match model / DB column) |
+
+For **local-only** laptops, omit both `SUPABASE_URL` and `SUPABASE_KEY` (local orchestrator calls `/generate-embeddings-local`).
 
 ### Cloudflare Worker (`worker.js`)
 

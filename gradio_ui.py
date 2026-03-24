@@ -15,6 +15,14 @@ import PyPDF2
 
 # Configuration (see .env.example)
 WORKER_URL = (os.environ.get("WORKER_URL") or "").strip().rstrip("/")
+LOCAL_ORCHESTRATOR_URL = (
+    (os.environ.get("LOCAL_ORCHESTRATOR_URL") or "").strip()
+    or "http://127.0.0.1:8788"
+).rstrip("/")
+# Cloud is always the default. Local is used ONLY if BACKEND_MODE=local is set explicitly
+# (never inferred from missing Supabase or WORKER_URL).
+_raw_backend = (os.environ.get("BACKEND_MODE") or "").strip().lower()
+DEFAULT_BACKEND_MODE = "local" if _raw_backend == "local" else "cloud"
 OPENROUTER_API_KEY = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
 OPENROUTER_URL = (
     os.environ.get("OPENROUTER_URL") or "https://openrouter.ai/api/v1/chat/completions"
@@ -57,6 +65,13 @@ GEMINI_MODEL_CHOICES = [
 ]
 
 
+def orchestrator_base_url(backend_mode: str) -> str:
+    m = (backend_mode or "cloud").strip().lower()
+    if m == "local":
+        return LOCAL_ORCHESTRATOR_URL
+    return WORKER_URL
+
+
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF file"""
     try:
@@ -70,18 +85,22 @@ def extract_text_from_pdf(file_path: str) -> str:
     except Exception as e:
         raise Exception(f"Error extracting PDF text: {str(e)}")
 
-def upload_document(file, document_text: str, laptop_urls: str):
+def upload_document(file, document_text: str, laptop_urls: str, backend_mode: str):
     """
-    Upload document to Cloudflare Worker.
+    Upload document to the orchestrator (Cloudflare+Supabase or local SQLite).
     Accepts either file upload (.txt or .pdf) or text input.
     Returns: (status_message, show_chat_ui)
     """
     import time
     start_time = time.time()
 
-    if not WORKER_URL:
-        return "❌ WORKER_URL is not set. Copy .env.example to .env and set WORKER_URL.", False
-    
+    base = orchestrator_base_url(backend_mode)
+    mode = (backend_mode or "cloud").strip().lower()
+    if not base:
+        if mode == "local":
+            return "❌ LOCAL_ORCHESTRATOR_URL is not set. Add it to .env or start local_orchestrator.py on the default port.", False
+        return "❌ WORKER_URL is not set. Copy .env.example to .env for cloud mode.", False
+
     # Get document text from file or text input
     doc_text = ""
     
@@ -115,7 +134,7 @@ def upload_document(file, document_text: str, laptop_urls: str):
         return "❌ Please provide a document (upload file or paste text)", False
     
     if not laptop_urls or not laptop_urls.strip():
-        return "❌ Please provide at least one laptop URL (ngrok URL)", False
+        return "❌ Please provide at least one laptop worker URL (ngrok or LAN, e.g. http://192.168.1.10:8000)", False
     
     # Parse laptop URLs
     urls = [url.strip() for url in laptop_urls.split(',') if url.strip()]
@@ -125,7 +144,7 @@ def upload_document(file, document_text: str, laptop_urls: str):
     
     try:
         response = requests.post(
-            f"{WORKER_URL}/upload-document",
+            f"{base}/upload-document",
             json={
                 "document_text": doc_text,
                 "laptop_urls": urls
@@ -268,14 +287,20 @@ def _call_gemini(model: str, context: str, query: str):
     return answer, inp, out
 
 
-def process_query(query: str, laptop_urls: str, llm_provider: str, model: str) -> str:
+def process_query(
+    query: str, laptop_urls: str, llm_provider: str, model: str, backend_mode: str
+) -> str:
     """
     Process query and get answer from LLM (OpenRouter or Google Gemini).
     """
     total_start_time = time.time()
 
-    if not WORKER_URL:
-        return "❌ WORKER_URL is not set. Copy .env.example to .env and set WORKER_URL."
+    base = orchestrator_base_url(backend_mode)
+    mode = (backend_mode or "cloud").strip().lower()
+    if not base:
+        if mode == "local":
+            return "❌ LOCAL_ORCHESTRATOR_URL is not set for local mode."
+        return "❌ WORKER_URL is not set for cloud mode."
 
     if not query or not query.strip():
         return "❌ Please provide a query"
@@ -298,7 +323,7 @@ def process_query(query: str, laptop_urls: str, llm_provider: str, model: str) -
         search_start_time = time.time()
         print("Querying worker for relevant chunks...")
         response = requests.post(
-            f"{WORKER_URL}/process-query",
+            f"{base}/process-query",
             json={"query": query, "laptop_urls": urls, "top_k": 5},
             timeout=60,
         )
@@ -355,10 +380,24 @@ def process_query(query: str, laptop_urls: str, llm_provider: str, model: str) -
 with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🚀 Adaptive Cloud-Federated Multi-GPU Architecture")
     gr.Markdown("### Distributed Knowledge Extraction and Context-Aware Question Response")
-    
+
+    backend_radio = gr.Radio(
+        choices=[
+            ("Cloudflare + Supabase (default)", "cloud"),
+            ("Local LAN + SQLite (no Supabase)", "local"),
+        ],
+        value=DEFAULT_BACKEND_MODE,
+        label="Orchestrator backend",
+        info=(
+            "Default is Cloud unless BACKEND_MODE=local is in .env. "
+            "Missing Supabase never auto-switches to Local—fix cloud config or deliberately choose Local. "
+            "Local: python local_orchestrator.py; laptops omit SUPABASE_*; use LAN URLs."
+        ),
+    )
+
     # State to track if document is uploaded
     document_uploaded = gr.State(value=False)
-    
+
     with gr.Row():
         with gr.Column(scale=1):
             gr.Markdown("### 📤 Step 1: Upload Document")
@@ -380,10 +419,10 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
             )
             
             laptop_urls_input = gr.Textbox(
-                label="Laptop URLs (ngrok)",
-                placeholder="https://abc123.ngrok-free.app, https://xyz789.ngrok-free.app",
+                label="Laptop worker URLs",
+                placeholder="http://192.168.1.10:8000 or https://....ngrok-free.app",
                 value="",
-                info="Comma-separated ngrok URLs of your laptops"
+                info="Comma-separated: LAN IPs for local mode, or ngrok URLs for cloud",
             )
             
             upload_btn = gr.Button("Upload & Process Document", variant="primary", size="lg")
@@ -405,10 +444,10 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
             )
             
             query_laptop_urls = gr.Textbox(
-                label="Laptop URLs (ngrok)",
-                placeholder="https://abc123.ngrok-free.app, https://xyz789.ngrok-free.app",
+                label="Laptop worker URLs",
+                placeholder="Same as Step 1 (LAN or ngrok)",
                 value="",
-                info="Same URLs used for upload"
+                info="Must match the backend you used for upload",
             )
 
             llm_provider_radio = gr.Radio(
@@ -444,14 +483,14 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
             )
     
     # Upload button handler
-    def handle_upload(file, text, urls):
-        status_msg, show_chat = upload_document(file, text, urls)
+    def handle_upload(file, text, urls, backend_mode):
+        status_msg, show_chat = upload_document(file, text, urls, backend_mode)
         return status_msg, gr.update(visible=show_chat), urls
-    
+
     upload_btn.click(
         fn=handle_upload,
-        inputs=[file_upload, document_input, laptop_urls_input],
-        outputs=[upload_output, chat_column, query_laptop_urls]
+        inputs=[file_upload, document_input, laptop_urls_input, backend_radio],
+        outputs=[upload_output, chat_column, query_laptop_urls],
     )
     
     def _on_llm_provider_change(provider: str):
@@ -468,7 +507,13 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
     # Query button handler
     query_btn.click(
         fn=process_query,
-        inputs=[query_input, query_laptop_urls, llm_provider_radio, model_dropdown],
+        inputs=[
+            query_input,
+            query_laptop_urls,
+            llm_provider_radio,
+            model_dropdown,
+            backend_radio,
+        ],
         outputs=query_output,
     )
     
@@ -487,18 +532,19 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
         - **Supabase**: Stores document chunks and embeddings
         - **Laptop Workers**: Generate embeddings and perform vector search (via ngrok)
         - **OpenRouter** or **Google Gemini (AI Studio)**: LLM for answers (pick in Step 2)
+        - **Orchestrator**: Cloud (Worker + Supabase) or **Local** (`local_orchestrator.py` + SQLite, no Supabase)
         
         ### Setup:
-        1. Deploy Cloudflare Worker (already done)
+        1. **Cloud:** Deploy Worker, set Supabase env vars; **Local:** `python local_orchestrator.py`, laptops without `SUPABASE_*`
         2. Run laptop workers: `python laptop_worker.py`
-        3. Start ngrok: `ngrok http 8000`
+        3. If cloud: ngrok to expose laptops; if local: use LAN URLs only
         4. Use this UI to upload documents and ask questions!
         """)
 
 if __name__ == "__main__":
     _missing = []
-    if not WORKER_URL:
-        _missing.append("WORKER_URL")
+    if DEFAULT_BACKEND_MODE == "cloud" and not WORKER_URL:
+        _missing.append("WORKER_URL (required for cloud default — or set BACKEND_MODE=local intentionally)")
     if not OPENROUTER_API_KEY and not GEMINI_API_KEY:
         _missing.append("OPENROUTER_API_KEY and/or GEMINI_API_KEY")
     if _missing:
@@ -509,7 +555,11 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("🚀 Starting Gradio UI...")
     print("="*60)
-    print(f"📡 Cloudflare Worker: {WORKER_URL}")
+    print(f"📡 Cloud worker: {WORKER_URL or '(not set — use Local backend)'}")
+    print(f"🏠 Local orchestrator URL: {LOCAL_ORCHESTRATOR_URL}")
+    print(f"📋 Default orchestrator in UI: {DEFAULT_BACKEND_MODE} (set only via BACKEND_MODE=local; else cloud)")
+    if DEFAULT_BACKEND_MODE == "local":
+        print("   → Intentional LAN/SQLite mode. Cloud users: remove BACKEND_MODE or set BACKEND_MODE=cloud.")
     print(
         f"🔑 LLM keys: OpenRouter={'yes' if OPENROUTER_API_KEY else 'no'}, "
         f"Gemini={'yes' if GEMINI_API_KEY else 'no'}"

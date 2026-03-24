@@ -46,16 +46,13 @@ app.add_middleware(
 )
 
 # Configuration (see .env.example)
-def _require_env(name: str) -> str:
-    v = os.environ.get(name, "").strip()
-    if not v:
-        raise RuntimeError(f"Missing {name} in environment or .env (see .env.example)")
-    return v
-
-
-SUPABASE_URL = _require_env("SUPABASE_URL")
-SUPABASE_KEY = _require_env("SUPABASE_KEY")
+# Cloud mode: set SUPABASE_URL + SUPABASE_KEY for /generate-embeddings (Cloudflare worker).
+# Local-LAN mode: omit both; use /generate-embeddings-local with local_orchestrator.py only.
+SUPABASE_URL = (os.environ.get("SUPABASE_URL") or "").strip()
+SUPABASE_KEY = (os.environ.get("SUPABASE_KEY") or "").strip()
 SUPABASE_TABLE = (os.environ.get("SUPABASE_TABLE") or "document_chunks").strip()
+if (SUPABASE_URL and not SUPABASE_KEY) or (SUPABASE_KEY and not SUPABASE_URL):
+    raise RuntimeError("Set both SUPABASE_URL and SUPABASE_KEY, or leave both empty for local-only laptops.")
 
 # Initialize embedding model (using GPU if available)
 print("\n[3/5] Checking device...")
@@ -82,14 +79,18 @@ except Exception as e:
     print(f"   ✗ Error loading model: {e}")
     raise
 
-# Initialize Supabase client
+# Initialize Supabase client (optional for local orchestrator + LAN)
 print("\n[5/5] Connecting to Supabase...")
-try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("   ✓ Connected to Supabase")
-except Exception as e:
-    print(f"   ✗ Error connecting to Supabase: {e}")
-    raise
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("   ✓ Connected to Supabase (cloud /generate-embeddings enabled)")
+    except Exception as e:
+        print(f"   ✗ Error connecting to Supabase: {e}")
+        raise
+else:
+    print("   ⚠ Supabase not configured — local-only mode (/generate-embeddings-local)")
 
 print("\n" + "="*60)
 print("All components initialized successfully!")
@@ -113,6 +114,17 @@ class SearchChunksRequest(BaseModel):
     query: str
     top_k: int = 5
 
+
+class LocalEmbedItem(BaseModel):
+    id: int
+    chunk_text: str
+
+
+class GenerateEmbeddingsLocalRequest(BaseModel):
+    document_id: str
+    items: List[LocalEmbedItem]
+
+
 class HealthResponse(BaseModel):
     status: str
     device: str
@@ -125,10 +137,12 @@ async def root():
     return {
         "message": "Laptop Worker API",
         "endpoints": [
-            "POST /generate-embeddings - Generate embeddings for chunks",
+            "POST /generate-embeddings - Cloud: fetch chunks from Supabase, embed, write back",
+            "POST /generate-embeddings-local - LAN: embed inline chunk texts (no Supabase)",
             "POST /search-chunks - Search for relevant chunks",
-            "GET /health - Health check"
-        ]
+            "GET /health - Health check",
+        ],
+        "supabase": bool(supabase),
     }
 
 @app.get("/health")
@@ -150,6 +164,12 @@ async def generate_embeddings(request: GenerateEmbeddingsRequest):
     """
     import time
     start_time = time.time()
+
+    if supabase is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase not configured on this laptop. Use local orchestrator + POST /generate-embeddings-local, or set SUPABASE_URL and SUPABASE_KEY.",
+        )
     
     try:
         print(f"Received request to generate embeddings for {len(request.chunk_ids)} chunks")
@@ -301,6 +321,85 @@ async def generate_embeddings(request: GenerateEmbeddingsRequest):
         print(f"Error generating embeddings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/generate-embeddings-local")
+async def generate_embeddings_local(request: GenerateEmbeddingsLocalRequest):
+    """
+    LAN / local orchestrator: embed chunk texts sent in the body (no Supabase).
+    """
+    import time
+
+    start_time = time.time()
+    if not request.items:
+        raise HTTPException(status_code=400, detail="items required")
+
+    try:
+        chunks = [{"id": it.id, "chunk_text": it.chunk_text} for it in request.items]
+        print(
+            f"(local) Embedding {len(chunks)} chunks for document {request.document_id}"
+        )
+
+        fetch_time = 0.0
+        chunk_texts = [c["chunk_text"] for c in chunks]
+
+        embedding_start = time.time()
+        print(f"Generating embeddings on {device}...")
+        embeddings = embedding_model.encode(
+            chunk_texts,
+            batch_size=32,
+            show_progress_bar=True,
+            convert_to_numpy=True,
+        )
+        embedding_time = time.time() - embedding_start
+
+        for i, chunk in enumerate(chunks):
+            embeddings_cache_cpu[chunk["id"]] = np.asarray(
+                embeddings[i], dtype=np.float32
+            )
+
+        store_time = 0.0
+
+        gpu_cache_start = time.time()
+        global embeddings_cache_gpu, chunk_ids_list
+        if device == "cuda" and len(embeddings_cache_cpu) > 0:
+            all_embeddings = []
+            chunk_ids_list = []
+            for chunk_id in sorted(embeddings_cache_cpu.keys()):
+                chunk_ids_list.append(chunk_id)
+                all_embeddings.append(embeddings_cache_cpu[chunk_id])
+            embeddings_cache_gpu = torch.tensor(
+                np.array(all_embeddings), device=device, dtype=torch.float32
+            )
+            gpu_cache_time = time.time() - gpu_cache_start
+            print(
+                f"Built GPU cache tensor in {gpu_cache_time:.2f}s ({len(chunk_ids_list)} embeddings)"
+            )
+        else:
+            gpu_cache_time = 0.0
+
+        total_time = time.time() - start_time
+        processed_count = len(chunks)
+        print(
+            f"(local) Processed {processed_count} chunks in {total_time:.2f}s "
+            f"(embed {embedding_time:.2f}s, gpu_cache {gpu_cache_time:.2f}s)"
+        )
+
+        return {
+            "success": True,
+            "chunks_processed": processed_count,
+            "processing_time": total_time,
+            "fetch_time": fetch_time,
+            "embedding_time": embedding_time,
+            "store_time": store_time,
+            "gpu_cache_time": gpu_cache_time,
+            "chunks_per_second": processed_count / total_time if total_time > 0 else 0,
+            "message": f"Local: embedded {processed_count} chunks",
+        }
+    except Exception as e:
+        print(f"Error in generate-embeddings-local: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/search-chunks")
 async def search_chunks(request: SearchChunksRequest):
     """
@@ -326,25 +425,41 @@ async def search_chunks(request: SearchChunksRequest):
         global embeddings_cache_gpu, chunk_ids_list
         
         if len(embeddings_cache_cpu) == 0:
-            print("Cache empty, loading embeddings from Supabase...")
-            response = supabase.table(SUPABASE_TABLE).select('id,embedding').not_.is_('embedding', 'null').execute()
-            
-            for row in response.data:
-                if row['embedding']:
-                    embeddings_cache_cpu[row['id']] = np.array(row['embedding'])
-            
-            # Build GPU cache if GPU available
-            if device == "cuda" and len(embeddings_cache_cpu) > 0:
-                all_embeddings = []
-                chunk_ids_list = []
-                for chunk_id in sorted(embeddings_cache_cpu.keys()):
-                    chunk_ids_list.append(chunk_id)
-                    all_embeddings.append(embeddings_cache_cpu[chunk_id])
-                embeddings_cache_gpu = torch.tensor(np.array(all_embeddings), device=device, dtype=torch.float32)
-                print(f"Built GPU cache tensor ({len(chunk_ids_list)} embeddings)")
-            
-            load_time = time.time() - load_start
-            print(f"Loaded {len(embeddings_cache_cpu)} embeddings from Supabase in {load_time:.2f}s")
+            if supabase is not None:
+                print("Cache empty, loading embeddings from Supabase...")
+                response = (
+                    supabase.table(SUPABASE_TABLE)
+                    .select("id,embedding")
+                    .not_.is_("embedding", "null")
+                    .execute()
+                )
+
+                for row in response.data:
+                    if row["embedding"]:
+                        embeddings_cache_cpu[row["id"]] = np.array(row["embedding"])
+
+                if device == "cuda" and len(embeddings_cache_cpu) > 0:
+                    all_embeddings = []
+                    chunk_ids_list = []
+                    for chunk_id in sorted(embeddings_cache_cpu.keys()):
+                        chunk_ids_list.append(chunk_id)
+                        all_embeddings.append(embeddings_cache_cpu[chunk_id])
+                    embeddings_cache_gpu = torch.tensor(
+                        np.array(all_embeddings), device=device, dtype=torch.float32
+                    )
+                    print(
+                        f"Built GPU cache tensor ({len(chunk_ids_list)} embeddings)"
+                    )
+
+                load_time = time.time() - load_start
+                print(
+                    f"Loaded {len(embeddings_cache_cpu)} embeddings from Supabase in {load_time:.2f}s"
+                )
+            else:
+                load_time = 0.0
+                print(
+                    "Cache empty; Supabase disabled — run a local upload so this laptop receives /generate-embeddings-local"
+                )
         else:
             load_time = 0
         
