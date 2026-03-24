@@ -179,3 +179,37 @@ Set in Worker Variables:
 - **`connection refused 127.0.0.1:8000`**: laptop worker is not running
 - **Cloud mode 503 from worker**: missing Worker vars (`SUPABASE_URL`/`SUPABASE_KEY`)
 - **No relevant chunks**: upload may have failed on laptop processing step
+## Website (Cloudflare Pages)
+
+A full React + Vite frontend lives in `web/` with:
+- fixed neo-brutalist editorial theme system (paper/dark/blue)
+- full sections (Home, Demo, How It Works, Setup, Config, Benchmarks, Security, FAQ)
+- live demo forms wired to both backends:
+  - cloud: `WORKER_URL` -> `/upload-document`, `/process-query`
+  - local: `LOCAL_ORCHESTRATOR_URL` -> same routes
+- OpenRouter + Gemini provider support in-browser
+
+### Local frontend dev
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+### Production build
+
+```bash
+cd web
+npm run build
+```
+
+### Cloudflare Pages deploy
+
+- Project root: `web`
+- Build command: `npm run build`
+- Build output directory: `dist`
+- Node version: latest LTS
+- Set optional Pages env vars from `web/.env.example` (`VITE_*`)
+
+Important: this demo currently calls OpenRouter/Gemini directly from browser with user-provided keys. For public production traffic, move LLM calls to a trusted backend proxy and add abuse controls (Turnstile + rate limits + quotas).
