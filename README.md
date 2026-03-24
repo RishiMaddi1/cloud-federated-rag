@@ -1,211 +1,181 @@
 # cloud-federated-rag
 
-**Adaptive Cloud-Federated Multi-GPU Architecture for Distributed Knowledge Extraction and Context-Aware Question Response**
+Distributed RAG with two orchestrator options:
+- **Cloud mode (default):** Cloudflare Worker + Supabase + laptop workers
+- **Local mode (optional):** local_orchestrator.py + SQLite + laptop workers (no Supabase)
 
-A distributed RAG (Retrieval-Augmented Generation) system that leverages multiple laptop GPUs to accelerate embedding generation and vector search.
+---
 
-## 🏗️ Architecture
+## CLOUD SETUP (EXACT STEPS)
 
-```
-User (Gradio UI)
-    ↓
-Cloudflare Worker (Orchestrator)
-    ↓
-    ├──→ Supabase (Storage)
-    └──→ Laptop Workers (via ngrok)
-            ├──→ Laptop 1 (GPU)
-            ├──→ Laptop 2 (GPU)
-            └──→ Laptop N (GPU)
-    ↓
-OpenRouter API (LLM)
-```
+Use this when you want the hosted/public flow.
 
-## 📋 Components
-
-1. **Cloudflare Worker** (`worker.js`) - Orchestrates document upload, chunk distribution, and query processing
-2. **Laptop Worker** (`laptop_worker.py`) - FastAPI server that generates embeddings and performs vector search
-3. **Gradio UI** (`gradio_ui.py`) - User interface for uploading documents and asking questions
-4. **Supabase** - Stores document chunks and embeddings (cloud backend only)
-5. **Local orchestrator** (`local_orchestrator.py`) - Optional: same API as the Worker but uses **SQLite** on a LAN machine (no Supabase, no Cloudflare)
-
-### Local mode (optional — LAN lab, no Supabase)
-
-**Cloud stays the default.** The UI does **not** fall back to Local if Supabase or laptop env is wrong — you fix cloud config, or you **explicitly** choose Local (and optionally set `BACKEND_MODE=local` so the UI opens on that option).
-
-Use the **Orchestrator backend → Local LAN + SQLite** option in Gradio (or `BACKEND_MODE=local` in `.env`).
-
-```
-User (Gradio UI)
-    ↓
-local_orchestrator.py (FastAPI + SQLite on one machine)
-    ↓
-Laptop workers at LAN URLs (e.g. http://192.168.x.x:8000)
-    ↓
-LLM (OpenRouter / Gemini)
-```
-
-- On the machine running the orchestrator: `python local_orchestrator.py` (default `http://0.0.0.0:8788`). Point `LOCAL_ORCHESTRATOR_URL` in `.env` at it if needed.
-- On each GPU laptop: **leave `SUPABASE_URL` and `SUPABASE_KEY` unset** in `.env` so only `/generate-embeddings-local` is used. Same `laptop_worker.py` process.
-- In Gradio, paste **comma-separated LAN URLs** to each laptop (no ngrok required if the UI machine can reach them).
-- Chunk text lives in `local_rag.db` (gitignored). Embeddings stay in laptop RAM until restart (same idea as cloud, without DB persistence on laptops).
-
-Cloud mode (Worker + Supabase) stays the default and is unchanged.
-
-## 🚀 Setup
-
-### 1. Install Dependencies
+### 1) Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Environment file
+### 2) Create `.env`
 
-```bash
-cp .env.example .env
+Copy `.env.example` to `.env`.
+
+Set at least these values:
+
+```env
+WORKER_URL=https://your-worker.workers.dev
+OPENROUTER_API_KEY=...
+# or GEMINI_API_KEY=...
+
+# laptop_worker cloud mode requires both:
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=...
+SUPABASE_TABLE=document_chunks
 ```
 
-Edit `.env` with your Worker URL, OpenRouter key, and Supabase values. The file is **gitignored** and must not be committed.
+### 3) Create Supabase table
 
-### 3. Deploy Cloudflare Worker
-
-1. Go to [Cloudflare Workers Dashboard](https://workers.cloudflare.com/)
-2. Create a new Worker
-3. Copy contents of `worker.js` and paste into the editor
-4. Under **Settings → Variables**, add `SUPABASE_URL`, `SUPABASE_KEY`, and optionally `SUPABASE_TABLE`
-5. Deploy and copy your Worker URL (use it as `WORKER_URL` in `.env`)
-
-### 4. Setup Supabase
-
-1. Create a table in Supabase SQL Editor:
+Run in Supabase SQL editor:
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE document_chunks (
-    id SERIAL PRIMARY KEY,
-    chunk_text TEXT NOT NULL,
-    chunk_index INTEGER NOT NULL,
-    document_id TEXT,
-    embedding VECTOR(384),  -- Adjust based on your embedding model
-    created_at TIMESTAMP DEFAULT NOW()
+  id SERIAL PRIMARY KEY,
+  chunk_text TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  document_id TEXT,
+  embedding VECTOR(384),
+  created_at TIMESTAMP DEFAULT NOW()
 );
 
 CREATE INDEX idx_document_chunks_document_id ON document_chunks(document_id);
-CREATE INDEX idx_document_chunks_embedding ON document_chunks 
-USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX idx_document_chunks_embedding ON document_chunks USING hnsw (embedding vector_cosine_ops);
 ```
 
-### 5. Run Laptop Worker
+### 4) Deploy Cloudflare Worker
 
-On each laptop with GPU:
+- Open Cloudflare Workers dashboard
+- Create/edit a Worker
+- Paste `worker.js`
+- In Worker **Settings -> Variables**, add:
+  - `SUPABASE_URL`
+  - `SUPABASE_KEY` (secret)
+  - `SUPABASE_TABLE` (optional, defaults to `document_chunks`)
+- Deploy
+- Put the deployed URL into `WORKER_URL` in `.env`
+
+### 5) Start laptop workers (each GPU laptop)
+
+Terminal A:
 
 ```bash
-# Terminal 1: Start laptop worker
 python laptop_worker.py
+```
 
-# Terminal 2: Start ngrok
+Terminal B:
+
+```bash
 ngrok http 8000
 ```
 
-Copy the ngrok URL (e.g., `https://abc123.ngrok.io`)
+Collect each laptop's ngrok URL.
 
-### 6. Run Gradio UI
+### 6) Start Gradio UI
 
 ```bash
 python gradio_ui.py
 ```
 
-Open browser to `http://localhost:7860`
+Open `http://localhost:7860` and keep backend as **Cloudflare + Supabase**.
 
-## 📖 Usage
+### 7) Use the app
 
-1. **Upload Document**:
-   - Paste your document text
-   - Enter comma-separated ngrok URLs of your laptops
-   - Click "Upload & Process Document"
+- Upload document
+- Paste comma-separated laptop URLs (ngrok)
+- Ask questions with OpenRouter or Gemini provider
 
-2. **Ask Questions**:
-   - Enter your question
-   - Enter the same laptop URLs
-   - Select an LLM model
-   - Click "Get Answer"
+---
 
-## 🔧 Configuration
+## LOCAL SETUP (NO SUPABASE)
 
-Secrets are **not** in source code. Copy `.env.example` to `.env` in the project folder (`.env` is gitignored).
+Use this for LAN labs or offline-ish demos where everything stays local.
+
+### 1) Keep cloud as default unless intentional
+
+Local is used only when you explicitly choose it:
+- In UI: **Orchestrator backend -> Local LAN + SQLite**
+- Optional env default: `BACKEND_MODE=local`
+
+### 2) Start local orchestrator (one machine)
+
+```bash
+python local_orchestrator.py
+```
+
+Default URL: `http://127.0.0.1:8788` (UI uses this by default for local mode).
+
+### 3) Configure each laptop worker for local mode
+
+In each laptop `.env`, leave these unset/empty:
+
+```env
+SUPABASE_URL=
+SUPABASE_KEY=
+```
+
+Then run:
+
+```bash
+python laptop_worker.py
+```
+
+No ngrok required on LAN mode.
+
+### 4) In Gradio local mode
+
+- Select **Local LAN + SQLite** backend
+- Set laptop URLs as LAN endpoints, e.g.:
+  - `http://192.168.1.10:8000`
+  - `http://192.168.1.11:8000`
+- For same machine test, use: `http://127.0.0.1:8000`
+
+### 5) Local data behavior
+
+- Chunk text is stored in `local_rag.db` on orchestrator machine
+- Embeddings are cached in laptop worker memory
+- Restarting laptop workers clears in-memory embedding cache
+
+---
+
+## Key Environment Variables
 
 ### Gradio (`gradio_ui.py`)
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `WORKER_URL` | Yes | Cloudflare Worker base URL (no trailing slash) |
-| `OPENROUTER_API_KEY` | One of | Required if using OpenRouter in the UI |
-| `GEMINI_API_KEY` | One of | [Google AI Studio](https://aistudio.google.com/apikey) key for direct Gemini |
-| `OPENROUTER_URL` | No | Default: OpenRouter chat completions URL |
-| `DEFAULT_MODEL` | No | Default OpenRouter model id |
-| `DEFAULT_GEMINI_MODEL` | No | Default Gemini model id (e.g. `gemini-2.0-flash`) |
-| `GEMINI_API_BASE` | No | Default `https://generativelanguage.googleapis.com/v1beta` |
-| `DEFAULT_LLM_PROVIDER` | No | `openrouter` or `gemini` — default tab in the UI |
-| `OPENROUTER_HTTP_REFERER` | No | Optional header for OpenRouter |
-| `OPENROUTER_X_TITLE` | No | Optional header for OpenRouter |
-| `BACKEND_MODE` | No | Omit or anything other than `local` → **cloud** default in UI. Set **`local` only** on purpose for LAN labs |
-| `LOCAL_ORCHESTRATOR_URL` | No | Default `http://127.0.0.1:8788` when using local backend |
+- `WORKER_URL` (cloud mode)
+- `LOCAL_ORCHESTRATOR_URL` (local mode, default `http://127.0.0.1:8788`)
+- `BACKEND_MODE` (`cloud` default; set `local` only if intentional)
+- `OPENROUTER_API_KEY` and/or `GEMINI_API_KEY`
+- Optional: `DEFAULT_LLM_PROVIDER`, `DEFAULT_MODEL`, `DEFAULT_GEMINI_MODEL`
 
 ### Laptop worker (`laptop_worker.py`)
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SUPABASE_URL` | Yes | Project URL |
-| `SUPABASE_KEY` | Yes | anon or service role (match RLS policies) |
-| `SUPABASE_TABLE` | No | Default `document_chunks` |
-| `EMBEDDING_MODEL` | No | Default `sentence-transformers/all-MiniLM-L6-v2` |
-| `EMBEDDING_DIM` | No | Default `384` (must match model / DB column) |
-
-For **local-only** laptops, omit both `SUPABASE_URL` and `SUPABASE_KEY` (local orchestrator calls `/generate-embeddings-local`).
+- Cloud mode: set `SUPABASE_URL` + `SUPABASE_KEY`
+- Local mode: leave both empty
+- Optional: `SUPABASE_TABLE`, `EMBEDDING_MODEL`, `EMBEDDING_DIM`
 
 ### Cloudflare Worker (`worker.js`)
 
-In **Workers → your worker → Settings → Variables**, add:
+Set in Worker Variables:
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
+- `SUPABASE_TABLE` (optional)
 
-| Name | Type | Description |
-|------|------|-------------|
-| `SUPABASE_URL` | Secret or plain | Same as above |
-| `SUPABASE_KEY` | **Secret** | Same key the Worker uses for REST |
-| `SUPABASE_TABLE` | Plain (optional) | Default `document_chunks` if unset |
+---
 
-Or use Wrangler: `wrangler secret put SUPABASE_URL` and `wrangler secret put SUPABASE_KEY` (see `wrangler.toml`).
+## Troubleshooting
 
-## 🎯 Features
-
-- ✅ Automatic chunk splitting
-- ✅ Distributed embedding generation across multiple GPUs
-- ✅ Parallel vector search
-- ✅ Caching for fast repeated queries
-- ✅ Support for multiple LLM models via OpenRouter
-- ✅ Beautiful Gradio UI
-
-## 📝 Notes
-
-- Make sure all laptops have the same embedding model
-- ngrok URLs change on restart - update them in the UI
-- First query may be slower as embeddings are loaded from Supabase
-- GPU acceleration is automatic if CUDA is available
-
-## 🐛 Troubleshooting
-
-**Laptop worker not responding:**
-- Check if ngrok is running
-- Verify laptop worker is running on port 8000
-- Check firewall settings
-
-**No embeddings found:**
-- Make sure document was uploaded successfully
-- Check if laptop workers processed the chunks
-- Verify Supabase has embeddings stored
-
-**Slow performance:**
-- Ensure GPUs are being used (check laptop worker logs)
-- Reduce chunk size in `worker.js` if needed
-- Use fewer chunks per query (reduce `top_k`)
-
+- **`connection refused 127.0.0.1:8788`**: local orchestrator is not running
+- **`connection refused 127.0.0.1:8000`**: laptop worker is not running
+- **Cloud mode 503 from worker**: missing Worker vars (`SUPABASE_URL`/`SUPABASE_KEY`)
+- **No relevant chunks**: upload may have failed on laptop processing step
