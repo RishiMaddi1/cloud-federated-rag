@@ -116,9 +116,13 @@ Secrets are **not** in source code. Copy `.env.example` to `.env` in the project
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `WORKER_URL` | Yes | Cloudflare Worker base URL (no trailing slash) |
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key |
+| `OPENROUTER_API_KEY` | One of | Required if using OpenRouter in the UI |
+| `GEMINI_API_KEY` | One of | [Google AI Studio](https://aistudio.google.com/apikey) key for direct Gemini |
 | `OPENROUTER_URL` | No | Default: OpenRouter chat completions URL |
-| `DEFAULT_MODEL` | No | Default LLM id |
+| `DEFAULT_MODEL` | No | Default OpenRouter model id |
+| `DEFAULT_GEMINI_MODEL` | No | Default Gemini model id (e.g. `gemini-2.0-flash`) |
+| `GEMINI_API_BASE` | No | Default `https://generativelanguage.googleapis.com/v1beta` |
+| `DEFAULT_LLM_PROVIDER` | No | `openrouter` or `gemini` — default tab in the UI |
 | `OPENROUTER_HTTP_REFERER` | No | Optional header for OpenRouter |
 | `OPENROUTER_X_TITLE` | No | Optional header for OpenRouter |
 
