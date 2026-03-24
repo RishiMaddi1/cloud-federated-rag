@@ -1,0 +1,17 @@
+# Optional: deploy with Wrangler CLI (npm i -g wrangler)
+# Do not put real keys in this file.
+
+name = "cloud-federated-rag-worker"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Optional plain var:
+# [vars]
+# SUPABASE_TABLE = "document_chunks"
+
+# Required secrets (run from this directory):
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_KEY
+#
+# Deploy:
+#   wrangler deploy

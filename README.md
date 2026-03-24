@@ -35,14 +35,23 @@ OpenRouter API (LLM)
 pip install -r requirements.txt
 ```
 
-### 2. Deploy Cloudflare Worker
+### 2. Environment file
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your Worker URL, OpenRouter key, and Supabase values. The file is **gitignored** and must not be committed.
+
+### 3. Deploy Cloudflare Worker
 
 1. Go to [Cloudflare Workers Dashboard](https://workers.cloudflare.com/)
 2. Create a new Worker
 3. Copy contents of `worker.js` and paste into the editor
-4. Deploy and copy your Worker URL
+4. Under **Settings → Variables**, add `SUPABASE_URL`, `SUPABASE_KEY`, and optionally `SUPABASE_TABLE`
+5. Deploy and copy your Worker URL (use it as `WORKER_URL` in `.env`)
 
-### 3. Setup Supabase
+### 4. Setup Supabase
 
 1. Create a table in Supabase SQL Editor:
 
@@ -63,7 +72,7 @@ CREATE INDEX idx_document_chunks_embedding ON document_chunks
 USING hnsw (embedding vector_cosine_ops);
 ```
 
-### 4. Run Laptop Worker
+### 5. Run Laptop Worker
 
 On each laptop with GPU:
 
@@ -77,7 +86,7 @@ ngrok http 8000
 
 Copy the ngrok URL (e.g., `https://abc123.ngrok.io`)
 
-### 5. Run Gradio UI
+### 6. Run Gradio UI
 
 ```bash
 python gradio_ui.py
@@ -100,22 +109,40 @@ Open browser to `http://localhost:7860`
 
 ## 🔧 Configuration
 
-### Update Worker URL in `gradio_ui.py`:
-```python
-WORKER_URL = "https://your-worker.workers.dev"
-```
+Secrets are **not** in source code. Copy `.env.example` to `.env` in the project folder (`.env` is gitignored).
 
-### Update Supabase credentials in `laptop_worker.py` and `worker.js`:
-```python
-SUPABASE_URL = "https://your-project.supabase.co"
-SUPABASE_KEY = "your-service-role-key"
-```
+### Gradio (`gradio_ui.py`)
 
-### Change Embedding Model in `laptop_worker.py`:
-```python
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # 384 dims
-# Or use: "sentence-transformers/all-mpnet-base-v2"  # 768 dims
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `WORKER_URL` | Yes | Cloudflare Worker base URL (no trailing slash) |
+| `OPENROUTER_API_KEY` | Yes | OpenRouter API key |
+| `OPENROUTER_URL` | No | Default: OpenRouter chat completions URL |
+| `DEFAULT_MODEL` | No | Default LLM id |
+| `OPENROUTER_HTTP_REFERER` | No | Optional header for OpenRouter |
+| `OPENROUTER_X_TITLE` | No | Optional header for OpenRouter |
+
+### Laptop worker (`laptop_worker.py`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SUPABASE_URL` | Yes | Project URL |
+| `SUPABASE_KEY` | Yes | anon or service role (match RLS policies) |
+| `SUPABASE_TABLE` | No | Default `document_chunks` |
+| `EMBEDDING_MODEL` | No | Default `sentence-transformers/all-MiniLM-L6-v2` |
+| `EMBEDDING_DIM` | No | Default `384` (must match model / DB column) |
+
+### Cloudflare Worker (`worker.js`)
+
+In **Workers → your worker → Settings → Variables**, add:
+
+| Name | Type | Description |
+|------|------|-------------|
+| `SUPABASE_URL` | Secret or plain | Same as above |
+| `SUPABASE_KEY` | **Secret** | Same key the Worker uses for REST |
+| `SUPABASE_TABLE` | Plain (optional) | Default `document_chunks` if unset |
+
+Or use Wrangler: `wrangler secret put SUPABASE_URL` and `wrangler secret put SUPABASE_KEY` (see `wrangler.toml`).
 
 ## 🎯 Features
 

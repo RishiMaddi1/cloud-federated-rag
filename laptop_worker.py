@@ -2,6 +2,13 @@
 # Run: python laptop_worker.py
 # Make sure ngrok is forwarding to http://localhost:8000
 
+from pathlib import Path
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 print("="*60)
 print("Starting Laptop Worker...")
 print("="*60)
@@ -38,10 +45,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration
-SUPABASE_URL = "https://nbrcxxzcsylvhyhqlpuj.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5icmN4eHpjc3lsdmh5aHFscHVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTUwMDAsImV4cCI6MjA4OTg5MTAwMH0.jHOjjxSVD8V0JC1GfWF6iK65nwmMXz_K4ufPhjfpTMI"
-SUPABASE_TABLE = "document_chunks"
+# Configuration (see .env.example)
+def _require_env(name: str) -> str:
+    v = os.environ.get(name, "").strip()
+    if not v:
+        raise RuntimeError(f"Missing {name} in environment or .env (see .env.example)")
+    return v
+
+
+SUPABASE_URL = _require_env("SUPABASE_URL")
+SUPABASE_KEY = _require_env("SUPABASE_KEY")
+SUPABASE_TABLE = (os.environ.get("SUPABASE_TABLE") or "document_chunks").strip()
 
 # Initialize embedding model (using GPU if available)
 print("\n[3/5] Checking device...")
@@ -54,8 +68,10 @@ if device == "cuda":
 # You can change this to other models like:
 # - "sentence-transformers/all-mpnet-base-v2" (768 dims)
 # - "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" (384 dims)
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
+EMBEDDING_MODEL = (
+    os.environ.get("EMBEDDING_MODEL") or "sentence-transformers/all-MiniLM-L6-v2"
+).strip()
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM") or "384")
 
 print(f"\n[4/5] Loading embedding model: {EMBEDDING_MODEL}...")
 print("   (This may take a minute if downloading for the first time...)")

@@ -1,6 +1,13 @@
 # Gradio UI for Distributed RAG System
 # Run: python gradio_ui.py
 
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 import gradio as gr
 import requests
 import json
@@ -9,13 +16,17 @@ from typing import List, Optional
 import PyPDF2
 import io
 
-# Configuration
-WORKER_URL = "https://hpc.aikipedia.workers.dev"
-OPENROUTER_API_KEY = "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"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# Default model
-DEFAULT_MODEL = "google/gemini-2.5-flash"
+# Configuration (see .env.example)
+WORKER_URL = (os.environ.get("WORKER_URL") or "").strip().rstrip("/")
+OPENROUTER_API_KEY = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+OPENROUTER_URL = (
+    os.environ.get("OPENROUTER_URL") or "https://openrouter.ai/api/v1/chat/completions"
+).strip()
+DEFAULT_MODEL = (os.environ.get("DEFAULT_MODEL") or "google/gemini-2.5-flash").strip()
+OPENROUTER_HTTP_REFERER = (
+    os.environ.get("OPENROUTER_HTTP_REFERER") or "https://github.com/your-repo"
+).strip()
+OPENROUTER_X_TITLE = (os.environ.get("OPENROUTER_X_TITLE") or "cloud-federated-rag").strip()
 
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF file"""
@@ -38,6 +49,9 @@ def upload_document(file, document_text: str, laptop_urls: str):
     """
     import time
     start_time = time.time()
+
+    if not WORKER_URL:
+        return "❌ WORKER_URL is not set. Copy .env.example to .env and set WORKER_URL.", False
     
     # Get document text from file or text input
     doc_text = ""
@@ -151,6 +165,11 @@ def process_query(query: str, laptop_urls: str, model: str) -> str:
     """
     import time
     total_start_time = time.time()
+
+    if not WORKER_URL:
+        return "❌ WORKER_URL is not set. Copy .env.example to .env and set WORKER_URL."
+    if not OPENROUTER_API_KEY:
+        return "❌ OPENROUTER_API_KEY is not set. Copy .env.example to .env."
     
     if not query or not query.strip():
         return "❌ Please provide a query"
@@ -202,8 +221,8 @@ def process_query(query: str, laptop_urls: str, model: str) -> str:
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/your-repo",
-                "X-Title": "Distributed RAG System"
+                "HTTP-Referer": OPENROUTER_HTTP_REFERER,
+                "X-Title": OPENROUTER_X_TITLE,
             },
             json={
                 "model": model,
@@ -288,8 +307,8 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
             
             laptop_urls_input = gr.Textbox(
                 label="Laptop URLs (ngrok)",
-                placeholder="https://abc123.ngrok.io, https://xyz789.ngrok.io",
-                value="https://78f779918f7a.ngrok-free.app",
+                placeholder="https://abc123.ngrok-free.app, https://xyz789.ngrok-free.app",
+                value="",
                 info="Comma-separated ngrok URLs of your laptops"
             )
             
@@ -313,8 +332,8 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
             
             query_laptop_urls = gr.Textbox(
                 label="Laptop URLs (ngrok)",
-                placeholder="https://abc123.ngrok.io, https://xyz789.ngrok.io",
-                value="https://78f779918f7a.ngrok-free.app",
+                placeholder="https://abc123.ngrok-free.app, https://xyz789.ngrok-free.app",
+                value="",
                 info="Same URLs used for upload"
             )
             
@@ -378,6 +397,16 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
         """)
 
 if __name__ == "__main__":
+    _missing = []
+    if not WORKER_URL:
+        _missing.append("WORKER_URL")
+    if not OPENROUTER_API_KEY:
+        _missing.append("OPENROUTER_API_KEY")
+    if _missing:
+        print("\nMissing environment variables:", ", ".join(_missing))
+        print("Copy .env.example to .env in this folder and set the values.\n")
+        raise SystemExit(1)
+
     print("\n" + "="*60)
     print("🚀 Starting Gradio UI...")
     print("="*60)

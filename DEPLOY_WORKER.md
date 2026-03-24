@@ -37,13 +37,17 @@ After deployment, your worker will have:
 
 ---
 
-## Worker Configuration
+## Worker configuration (environment variables)
 
-The worker is already configured with:
-- ✅ Supabase URL: `https://xafjwlnacwbghwjeibwc.supabase.co`
-- ✅ Supabase Key: (service role key)
-- ✅ Table name: `document_chunks`
-- ✅ CORS enabled for all origins
+After pasting `worker.js`, open **Settings → Variables** for the Worker and add:
 
-No environment variables needed - everything is hardcoded!
+| Name | Notes |
+|------|--------|
+| `SUPABASE_URL` | e.g. `https://xxxxx.supabase.co` |
+| `SUPABASE_KEY` | Use **Encrypt** (secret); anon or service role depending on your RLS |
+| `SUPABASE_TABLE` | Optional; defaults to `document_chunks` |
+
+Without `SUPABASE_URL` and `SUPABASE_KEY`, `/upload-document` and `/process-query` return **503** with a configuration error.
+
+**Wrangler (optional):** see `wrangler.toml` and run `wrangler secret put SUPABASE_URL`, `wrangler secret put SUPABASE_KEY`, then `wrangler deploy`.
 

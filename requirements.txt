@@ -22,3 +22,6 @@ pydantic==2.9.2
 # PDF Support
 PyPDF2==3.0.1
 
+# Local env files
+python-dotenv==1.2.2
+

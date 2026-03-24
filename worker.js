@@ -14,10 +14,18 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Supabase configuration
-    const SUPABASE_URL = "https://nbrcxxzcsylvhyhqlpuj.supabase.co";
-    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5icmN4eHpjc3lsdmh5aHFscHVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMTUwMDAsImV4cCI6MjA4OTg5MTAwMH0.jHOjjxSVD8V0JC1GfWF6iK65nwmMXz_K4ufPhjfpTMI";
-    const SUPABASE_TABLE = "document_chunks";
+    const SUPABASE_URL = env.SUPABASE_URL;
+    const SUPABASE_KEY = env.SUPABASE_KEY;
+    const SUPABASE_TABLE = env.SUPABASE_TABLE || "document_chunks";
+
+    function missingSupabaseResponse() {
+      return new Response(
+        JSON.stringify({
+          error: "Server misconfiguration: set SUPABASE_URL and SUPABASE_KEY on the Worker (Dashboard → Settings → Variables, or wrangler secrets).",
+        }),
+        { status: 503, headers: corsHeaders }
+      );
+    }
 
     // ngrok free: HTML interstitial breaks res.json() on laptop calls — keep this on both fetches.
     const laptopFetchHeaders = {
@@ -27,6 +35,9 @@ export default {
 
     // 📍 Route 1: Upload Document
     if (req.method === 'POST' && new URL(req.url).pathname === '/upload-document') {
+      if (!SUPABASE_URL || !SUPABASE_KEY) {
+        return missingSupabaseResponse();
+      }
       try {
         const body = await req.json();
         const { document_text, document_id, laptop_urls } = body;
@@ -165,6 +176,9 @@ export default {
 
     // 📍 Route 2: Process Query
     if (req.method === 'POST' && new URL(req.url).pathname === '/process-query') {
+      if (!SUPABASE_URL || !SUPABASE_KEY) {
+        return missingSupabaseResponse();
+      }
       try {
         const body = await req.json();
         const { query, laptop_urls, top_k = 5 } = body;
