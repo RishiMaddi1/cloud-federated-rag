@@ -1,4 +1,6 @@
-# Adaptive Cloud-Federated Multi-GPU Architecture for Distributed Knowledge Extraction and Context-Aware Question Response
+# cloud-federated-rag
+
+**Adaptive Cloud-Federated Multi-GPU Architecture for Distributed Knowledge Extraction and Context-Aware Question Response**
 
 A distributed RAG (Retrieval-Augmented Generation) system that leverages multiple laptop GPUs to accelerate embedding generation and vector search.
 
