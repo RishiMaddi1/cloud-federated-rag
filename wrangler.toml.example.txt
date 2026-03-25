@@ -1,5 +1,11 @@
-# Optional: deploy with Wrangler CLI (npm i -g wrangler)
-# Do not put real keys in this file.
+# Worker-only template (NOT used by Cloudflare Pages build).
+#
+# To deploy the Cloudflare Worker later:
+# 1) Copy this file to `wrangler.toml`
+# 2) Add secrets with `wrangler secret put ...`
+# 3) Run `wrangler deploy`
+#
+# IMPORTANT: Do not commit real SUPABASE_URL/SUPABASE_KEY values.
 
 name = "cloud-federated-rag-worker"
 main = "worker.js"

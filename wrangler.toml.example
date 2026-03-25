@@ -1,0 +1,19 @@
+# Cloudflare Worker CLI config only — not used by Cloudflare Pages.
+# Pages only auto-reads a file named `wrangler.toml` at the repo root; keeping this as
+# `.example` avoids Pages warnings and wrong build hints while still documenting Worker deploy.
+#
+# From repo root, either:
+#   wrangler deploy --config wrangler.toml.example
+#   wrangler secret put SUPABASE_URL --config wrangler.toml.example
+#   wrangler secret put SUPABASE_KEY --config wrangler.toml.example
+# or copy to `wrangler.toml` and run `wrangler deploy` / `wrangler secret put ...` as usual.
+#
+# Do not put real keys in any committed file.
+
+name = "cloud-federated-rag-worker"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Optional plain var:
+# [vars]
+# SUPABASE_TABLE = "document_chunks"

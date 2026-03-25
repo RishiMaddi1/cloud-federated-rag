@@ -22,15 +22,21 @@ export default function CloudPage() {
               <code className="inline-code">document_chunks</code>, <code className="inline-code">vector(384)</code>).
             </li>
             <li>
-              Files involved: <code className="inline-code">worker.js</code> (Worker code), <code className="inline-code">wrangler.toml</code>{" "}
-              (<code className="inline-code">main = &quot;worker.js&quot;</code>).
+              Files involved: <code className="inline-code">worker.js</code> (Worker code), optional{" "}
+              <code className="inline-code">wrangler.toml.example</code> for CLI deploy (
+              <code className="inline-code">main = &quot;worker.js&quot;</code>).
             </li>
             <li>
-              From the <strong>repository root</strong> (same folder as <code className="inline-code">wrangler.toml</code>):
+              From the <strong>repository root</strong> (use <code className="inline-code">--config wrangler.toml.example</code> or copy it to{" "}
+              <code className="inline-code">wrangler.toml</code> locally):
             </li>
           </ul>
           <pre className="howto-pre">
-            <code>wrangler secret put SUPABASE_URL{"\n"}wrangler secret put SUPABASE_KEY{"\n"}wrangler deploy</code>
+            <code>
+              wrangler secret put SUPABASE_URL --config wrangler.toml.example{"\n"}
+              wrangler secret put SUPABASE_KEY --config wrangler.toml.example{"\n"}
+              wrangler deploy --config wrangler.toml.example
+            </code>
           </pre>
           <ul className="howto-list">
             <li>

@@ -4,6 +4,7 @@
 - Connect your GitHub repo in Cloudflare Pages
 - Set **Root directory** to `web`
 - Framework preset: Vite (or None with manual settings)
+- There is **no** `wrangler.toml` at the repo root on purpose: Worker deploy uses `wrangler.toml.example` so Pages does not try to parse Worker config as a Pages build file.
 
 ## 2) Build settings
 - Build command: `npm run build`

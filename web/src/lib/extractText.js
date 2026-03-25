@@ -1,9 +1,3 @@
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.mjs?url";
-import mammoth from "mammoth";
-
-GlobalWorkerOptions.workerSrc = pdfWorker;
-
 function fileExt(name) {
   const i = name.lastIndexOf(".");
   return i >= 0 ? name.slice(i).toLowerCase() : "";
@@ -19,6 +13,11 @@ function readAsText(file) {
 }
 
 async function extractPdf(file) {
+  const [{ getDocument, GlobalWorkerOptions }, workerMod] = await Promise.all([
+    import("pdfjs-dist"),
+    import("pdfjs-dist/build/pdf.worker.mjs?url"),
+  ]);
+  GlobalWorkerOptions.workerSrc = workerMod.default;
   const data = await file.arrayBuffer();
   const pdf = await getDocument({ data }).promise;
   const parts = [];
@@ -34,6 +33,8 @@ async function extractPdf(file) {
 }
 
 async function extractDocx(file) {
+  const mammothMod = await import("mammoth");
+  const mammoth = mammothMod.default ?? mammothMod;
   const arrayBuffer = await file.arrayBuffer();
   const { value } = await mammoth.extractRawText({ arrayBuffer });
   return String(value || "").trim();
@@ -71,6 +72,8 @@ const TEXT_EXT = new Set([
 /**
  * Browser-side extraction for the demo. Not every binary format can be parsed without a server.
  * File picker is unrestricted; unsupported types get a clear error.
+ *
+ * PDF/DOCX deps load only when needed so the demo page can mount even if those libraries fail in strict environments.
  */
 export async function extractTextFromFile(file) {
   if (!file) return "";

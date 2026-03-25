@@ -49,5 +49,13 @@ After pasting `worker.js`, open **Settings → Variables** for the Worker and ad
 
 Without `SUPABASE_URL` and `SUPABASE_KEY`, `/upload-document` and `/process-query` return **503** with a configuration error.
 
-**Wrangler (optional):** see `wrangler.toml` and run `wrangler secret put SUPABASE_URL`, `wrangler secret put SUPABASE_KEY`, then `wrangler deploy`.
+**Wrangler (optional):** see `wrangler.toml.example` and run (from repo root), for example:
+
+```bash
+wrangler secret put SUPABASE_URL --config wrangler.toml.example
+wrangler secret put SUPABASE_KEY --config wrangler.toml.example
+wrangler deploy --config wrangler.toml.example
+```
+
+Or copy `wrangler.toml.example` to `wrangler.toml` locally (do not commit secrets) and use `wrangler deploy` without `--config`.
 
