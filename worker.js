@@ -244,44 +244,75 @@ export default {
           });
         }
 
-        // Fetch chunks in batches (Supabase has limits)
+        // Fetch chunk text from Supabase (laptops only return IDs)
+        const baseUrl = SUPABASE_URL.replace(/\/$/, '');
         const chunks = [];
+        const supabaseErrors = [];
+
         for (let i = 0; i < uniqueChunkIds.length; i += 100) {
           const batchIds = uniqueChunkIds.slice(i, i + 100);
           const idsString = batchIds.join(',');
-          
-          const supabaseResponse = await fetch(
-            `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}?id=in.(${idsString})&select=id,chunk_text,chunk_index,document_id`,
-            {
-              method: 'GET',
-              headers: {
-                'apikey': SUPABASE_KEY,
-                'Authorization': `Bearer ${SUPABASE_KEY}`,
-                'Content-Type': 'application/json',
-              },
-            }
-          );
+          const url = `${baseUrl}/rest/v1/${SUPABASE_TABLE}?id=in.(${idsString})&select=id,chunk_text,chunk_index,document_id`;
 
-          if (supabaseResponse.ok) {
-            const data = await supabaseResponse.json();
-            chunks.push(...data);
+          const supabaseResponse = await fetch(url, {
+            method: 'GET',
+            headers: {
+              apikey: SUPABASE_KEY,
+              Authorization: `Bearer ${SUPABASE_KEY}`,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          const sbText = await supabaseResponse.text();
+          let sbData;
+          try {
+            sbData = sbText ? JSON.parse(sbText) : [];
+          } catch {
+            sbData = null;
           }
+
+          if (supabaseResponse.ok && Array.isArray(sbData)) {
+            chunks.push(...sbData);
+          } else {
+            const snippet = typeof sbText === 'string' ? sbText.slice(0, 400) : String(sbData).slice(0, 400);
+            supabaseErrors.push({ status: supabaseResponse.status, body: snippet });
+            console.error(`Supabase chunk fetch failed: ${supabaseResponse.status} ${snippet}`);
+          }
+        }
+
+        if (uniqueChunkIds.length > 0 && chunks.length === 0) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error:
+                'Laptops returned chunk IDs, but the Worker loaded no rows from Supabase. Chunk text is fetched in the Worker (not on the laptop).',
+              hint:
+                'Use the Supabase service_role key as SUPABASE_KEY on the Worker, or add an RLS policy allowing SELECT on document_chunks for your anon key. Confirm SUPABASE_TABLE matches the table name.',
+              chunk_ids_from_laptops: uniqueChunkIds.slice(0, 30),
+              supabase_errors: supabaseErrors,
+              laptop_results: laptopResults,
+            }),
+            { status: 502, headers: corsHeaders }
+          );
         }
 
         const endTime = Date.now();
         const duration = endTime - startTime;
 
-        return new Response(JSON.stringify({
-          success: true,
-          query: query,
-          chunks: chunks,
-          total_chunks: chunks.length,
-          laptop_results: laptopResults,
-          processing_time_ms: duration,
-        }), {
-          status: 200,
-          headers: corsHeaders,
-        });
+        return new Response(
+          JSON.stringify({
+            success: true,
+            query: query,
+            chunks: chunks,
+            total_chunks: chunks.length,
+            laptop_results: laptopResults,
+            processing_time_ms: duration,
+          }),
+          {
+            status: 200,
+            headers: corsHeaders,
+          }
+        );
 
       } catch (e) {
         return new Response(JSON.stringify({ 

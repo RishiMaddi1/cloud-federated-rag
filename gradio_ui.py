@@ -85,15 +85,76 @@ def extract_text_from_pdf(file_path: str) -> str:
     except Exception as e:
         raise Exception(f"Error extracting PDF text: {str(e)}")
 
+
+def _upload_file_item_path(file_item) -> str:
+    if isinstance(file_item, str):
+        return file_item
+    return getattr(file_item, "name", str(file_item))
+
+
+def _read_doc_text_from_path(file_path: str):
+    """Returns (text, error). On success: (str, None). On failure: (None, str)."""
+    try:
+        lp = file_path.lower()
+        if lp.endswith(".pdf"):
+            doc_text = extract_text_from_pdf(file_path)
+            if not doc_text.strip():
+                return None, "PDF appears to be empty or couldn't extract text"
+            return doc_text, None
+        if lp.endswith(".txt"):
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                doc_text = f.read()
+            if not doc_text.strip():
+                return None, "File appears to be empty"
+            return doc_text, None
+        return None, "Unsupported file type. Please upload .txt or .pdf files"
+    except Exception as e:
+        return None, str(e)
+
+
+def _format_single_upload_result(data: dict, upload_elapsed: float) -> str:
+    result = ""
+    result += f"Document ID: {data.get('document_id')}\n"
+    result += f"Total chunks: {data.get('total_chunks')}\n"
+    result += f"Chunks stored: {data.get('chunks_stored')}\n\n"
+    laptop_results = data.get("laptop_results", [])
+    result += "Laptop Processing Results:\n"
+    all_success = True
+    total_chunks_processed = 0
+    for laptop in laptop_results:
+        status = "✅" if laptop.get("success") else "❌"
+        if not laptop.get("success"):
+            all_success = False
+        result += f"{status} Laptop {laptop.get('laptop_id')}: "
+        if laptop.get("success"):
+            chunks_processed = laptop.get("chunks_processed", 0)
+            total_chunks_processed += chunks_processed
+            result += f"Processed {chunks_processed} chunks"
+            if "processing_time" in laptop:
+                proc_time = laptop["processing_time"]
+                result += f" in {proc_time:.2f}s"
+                if "chunks_per_second" in laptop and laptop["chunks_per_second"] > 0:
+                    result += f" ({laptop['chunks_per_second']:.2f} chunks/sec)"
+            result += "\n"
+        else:
+            result += f"Error: {laptop.get('error', 'Unknown error')}\n"
+    result += f"\n⏱️  Upload time: {upload_elapsed:.2f} seconds\n"
+    result += f"📊 Chunks processed: {total_chunks_processed}\n"
+    if total_chunks_processed > 0 and upload_elapsed > 0:
+        result += f"⚡ Speed: {total_chunks_processed/upload_elapsed:.2f} chunks/second\n"
+    if all_success:
+        result += "\n✅ This document finished on all laptops.\n"
+    else:
+        result += "\n⚠️ Some laptops failed for this document.\n"
+    return result
+
+
 def upload_document(file, document_text: str, laptop_urls: str, backend_mode: str):
     """
-    Upload document to the orchestrator (Cloudflare+Supabase or local SQLite).
-    Accepts either file upload (.txt or .pdf) or text input.
+    Upload one or more documents to the orchestrator. Each file (and optional pasted text)
+    becomes a separate document_id; search spans all stored chunks.
     Returns: (status_message, show_chat_ui)
     """
-    import time
-    start_time = time.time()
-
     base = orchestrator_base_url(backend_mode)
     mode = (backend_mode or "cloud").strip().lower()
     if not base:
@@ -101,111 +162,80 @@ def upload_document(file, document_text: str, laptop_urls: str, backend_mode: st
             return "❌ LOCAL_ORCHESTRATOR_URL is not set. Add it to .env or start local_orchestrator.py on the default port.", False
         return "❌ WORKER_URL is not set. Copy .env.example to .env for cloud mode.", False
 
-    # Get document text from file or text input
-    doc_text = ""
-    
+    raw_files = []
     if file is not None:
-        try:
-            # Read file content (Gradio file upload returns file path)
-            file_path = file if isinstance(file, str) else file.name
-            
-            # Check file extension
-            if file_path.lower().endswith('.pdf'):
-                # Extract text from PDF
-                doc_text = extract_text_from_pdf(file_path)
-                if not doc_text.strip():
-                    return "❌ PDF appears to be empty or couldn't extract text", False
-            elif file_path.lower().endswith('.txt'):
-                # Read text file
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    doc_text = f.read()
-                if not doc_text.strip():
-                    return "❌ File appears to be empty", False
-            else:
-                return "❌ Unsupported file type. Please upload .txt or .pdf files", False
-                
-        except Exception as e:
-            return f"❌ Error reading file: {str(e)}", False
-    
-    if not doc_text and document_text:
-        doc_text = document_text
-    
-    if not doc_text or not doc_text.strip():
-        return "❌ Please provide a document (upload file or paste text)", False
-    
+        if isinstance(file, (list, tuple)):
+            raw_files = [f for f in file if f is not None]
+        else:
+            raw_files = [file]
+
+    items: list[tuple[str, str]] = []
+    pre_errors: list[str] = []
+
+    for f in raw_files:
+        path = _upload_file_item_path(f)
+        label = Path(path).name or path
+        doc_text, err = _read_doc_text_from_path(path)
+        if err:
+            pre_errors.append(f"❌ [{label}] {err}")
+            continue
+        items.append((label, doc_text.strip()))
+
+    pasted = (document_text or "").strip()
+    if pasted:
+        items.append(("(pasted text)", pasted))
+
+    if pre_errors and not items:
+        return "\n".join(pre_errors) + "\n\n❌ No documents could be read.", False
+
+    if not items:
+        return "❌ Please provide at least one .txt/.pdf file or paste text.", False
+
     if not laptop_urls or not laptop_urls.strip():
         return "❌ Please provide at least one laptop worker URL (ngrok or LAN, e.g. http://192.168.1.10:8000)", False
-    
-    # Parse laptop URLs
-    urls = [url.strip() for url in laptop_urls.split(',') if url.strip()]
-    
+
+    urls = [url.strip() for url in laptop_urls.split(",") if url.strip()]
     if not urls:
         return "❌ Invalid laptop URLs format. Use comma-separated URLs.", False
-    
-    try:
-        response = requests.post(
-            f"{base}/upload-document",
-            json={
-                "document_text": doc_text,
-                "laptop_urls": urls
-            },
-            timeout=300  # 5 minutes timeout
-        )
-        
-        if response.status_code == 200:
-            end_time = time.time()
-            total_time = end_time - start_time
-            
+
+    overall_start = time.time()
+    sections: list[str] = []
+    if pre_errors:
+        sections.append("File read issues:\n" + "\n".join(pre_errors))
+
+    any_http_success = False
+
+    for label, doc_text in items:
+        doc_start = time.time()
+        try:
+            response = requests.post(
+                f"{base}/upload-document",
+                json={"document_text": doc_text, "laptop_urls": urls},
+                timeout=300,
+            )
+            elapsed = time.time() - doc_start
+            if response.status_code != 200:
+                sections.append(
+                    f"─── {label} ───\n❌ HTTP {response.status_code}\n{response.text[:1200]}"
+                )
+                continue
+            any_http_success = True
             data = response.json()
-            result = f"✅ Document uploaded successfully!\n\n"
-            result += f"Document ID: {data.get('document_id')}\n"
-            result += f"Total chunks: {data.get('total_chunks')}\n"
-            result += f"Chunks stored: {data.get('chunks_stored')}\n\n"
-            
-            # Show laptop results with timing
-            laptop_results = data.get('laptop_results', [])
-            result += "Laptop Processing Results:\n"
-            all_success = True
-            total_chunks_processed = 0
-            for laptop in laptop_results:
-                status = "✅" if laptop.get('success') else "❌"
-                if not laptop.get('success'):
-                    all_success = False
-                result += f"{status} Laptop {laptop.get('laptop_id')}: "
-                if laptop.get('success'):
-                    chunks_processed = laptop.get('chunks_processed', 0)
-                    total_chunks_processed += chunks_processed
-                    result += f"Processed {chunks_processed} chunks"
-                    # Show processing time if available
-                    if 'processing_time' in laptop:
-                        proc_time = laptop['processing_time']
-                        result += f" in {proc_time:.2f}s"
-                        if 'chunks_per_second' in laptop and laptop['chunks_per_second'] > 0:
-                            result += f" ({laptop['chunks_per_second']:.2f} chunks/sec)"
-                    result += "\n"
-                else:
-                    result += f"Error: {laptop.get('error', 'Unknown error')}\n"
-            
-            # Add timing summary
-            result += f"\n⏱️  Total Upload Time: {total_time:.2f} seconds\n"
-            result += f"📊 Total Chunks Processed: {total_chunks_processed}\n"
-            if total_chunks_processed > 0:
-                result += f"⚡ Average Speed: {total_chunks_processed/total_time:.2f} chunks/second\n"
-            
-            if all_success:
-                result += "\n✅ Processing complete! You can now ask questions."
-                return result, True  # Show chat UI
-            else:
-                result += "\n⚠️ Some laptops failed. You can still try asking questions."
-                return result, True  # Show chat UI anyway
-            
-        else:
-            return f"❌ Error: {response.status_code}\n{response.text}", False
-            
-    except requests.exceptions.Timeout:
-        return "❌ Request timed out. The document might be too large or laptops are processing.", False
-    except Exception as e:
-        return f"❌ Error: {str(e)}", False
+            sections.append(f"─── {label} ───\n✅ Uploaded.\n\n{_format_single_upload_result(data, elapsed)}")
+        except requests.exceptions.Timeout:
+            sections.append(f"─── {label} ───\n❌ Request timed out.")
+        except Exception as e:
+            sections.append(f"─── {label} ───\n❌ Error: {str(e)}")
+
+    total_time = time.time() - overall_start
+    header = f"📚 Processed {len(items)} document source(s) in {total_time:.2f}s total.\n"
+    header += "Search will use chunks from every successful upload.\n\n"
+    result = header + "\n\n".join(sections)
+
+    if any_http_success:
+        result += "\n\nYou can now ask questions (context may include all uploaded documents)."
+        return result, True
+    return result, False
 
 
 def _call_openrouter(model: str, context: str, query: str):
@@ -216,7 +246,7 @@ def _call_openrouter(model: str, context: str, query: str):
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
             "HTTP-Referer": OPENROUTER_HTTP_REFERER,
-            "X-Title": OPENROUTER_X_TITLE,
+            "X-OpenRouter-Title": OPENROUTER_X_TITLE,
         },
         json={
             "model": model,
@@ -400,13 +430,17 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
 
     with gr.Row():
         with gr.Column(scale=1):
-            gr.Markdown("### 📤 Step 1: Upload Document")
-            gr.Markdown("Upload a .txt or .pdf file, or paste your document text below.")
+            gr.Markdown("### 📤 Step 1: Upload documents")
+            gr.Markdown(
+                "Upload one or more .txt or .pdf files (each becomes its own document in the index). "
+                "Optional pasted text is uploaded as an extra document after your files."
+            )
             
             file_upload = gr.File(
-                label="Upload Document (.txt or .pdf)",
+                label="Upload documents (.txt or .pdf)",
                 file_types=[".txt", ".pdf"],
-                type="filepath"
+                file_count="multiple",
+                type="filepath",
             )
             
             gr.Markdown("**OR** paste text below:")
@@ -425,7 +459,7 @@ with gr.Blocks(title="Distributed RAG System", theme=gr.themes.Soft()) as demo:
                 info="Comma-separated: LAN IPs for local mode, or ngrok URLs for cloud",
             )
             
-            upload_btn = gr.Button("Upload & Process Document", variant="primary", size="lg")
+            upload_btn = gr.Button("Upload & process document(s)", variant="primary", size="lg")
             
             upload_output = gr.Textbox(
                 label="Upload Status",

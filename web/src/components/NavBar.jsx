@@ -1,34 +1,45 @@
-export default function NavBar({ theme, onThemeChange }) {
-  const links = [
-    ["home", "Home"],
-    ["demo", "Demo"],
-    ["setup", "Setup"],
-    ["faq", "FAQ"],
-  ];
+import { NavLink } from "react-router-dom";
 
+const tabClass = ({ isActive }) => `page-tab${isActive ? " page-tab-active" : ""}`;
+
+export default function NavBar({ theme, onThemeChange }) {
   return (
     <header className="top-nav">
       <div className="nav-left">
-        <a href="#home" className="brand-link">cloud-federated-rag</a>
+        <NavLink to="/cloud" className="brand-link">
+          cloud-federated-rag
+        </NavLink>
       </div>
-      <div className="nav-center">
-        <label className="theme-switcher" htmlFor="themeSelect">Theme</label>
+
+      <nav className="nav-center" aria-label="Pages">
+        <div className="page-tabs">
+          <NavLink to="/cloud" className={tabClass} end>
+            Cloud
+          </NavLink>
+          <NavLink to="/local" className={tabClass}>
+            Local
+          </NavLink>
+          <NavLink to="/about" className={tabClass}>
+            About
+          </NavLink>
+        </div>
+      </nav>
+
+      <div className="nav-right">
+        <label className="theme-switcher" htmlFor="themeSelect">
+          Theme
+        </label>
         <select
           id="themeSelect"
           value={theme}
           onChange={(e) => onThemeChange(e.target.value)}
-          className="select-input"
+          className="select-input select-input--nav"
         >
           <option value="paper">Paper</option>
           <option value="dark">Dark</option>
           <option value="blue">Blue</option>
         </select>
       </div>
-      <nav className="nav-right" aria-label="Main">
-        {links.map(([id, label]) => (
-          <a key={id} href={`#${id}`} className="nav-link">{label}</a>
-        ))}
-      </nav>
     </header>
   );
 }

@@ -31,6 +31,49 @@ function baseUrl(mode, config) {
     : (config.workerUrl || "").trim().replace(/\/$/, "");
 }
 
+/** ngrok free tier may return HTML without this header. */
+function orchestratorHeaders(base) {
+  const headers = { "Content-Type": "application/json" };
+  if (/ngrok/i.test(base || "")) {
+    headers["ngrok-skip-browser-warning"] = "true";
+  }
+  return headers;
+}
+
+/** If `VITE_OPENROUTER_REFERER` / config is unset, use this tab’s origin. */
+function effectiveOpenRouterReferer(configReferer) {
+  const fromConfig = (configReferer || "").trim();
+  if (fromConfig) return fromConfig;
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "https://cloud-federated-rag.pages.dev";
+}
+
+function normalizeAssistantContent(message) {
+  const c = message?.content;
+  if (c == null) return "";
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) {
+    return c
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part?.type === "text" && part?.text) return part.text;
+        return part?.text ?? "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  return String(c);
+}
+
+function openRouterErrorMessage(data, raw, status) {
+  const e = data?.error;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") return e.message || e.code || JSON.stringify(e);
+  return data?.message || raw?.slice(0, 500) || `OpenRouter error (${status})`;
+}
+
 export function validateConfig(mode, config) {
   const missing = [];
   const base = baseUrl(mode, config);
@@ -59,12 +102,17 @@ export async function uploadDocument({ mode, config, documentText, fileText }) {
 
   const res = await fetch(`${base}/upload-document`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: orchestratorHeaders(base),
     body: JSON.stringify({ document_text: text, laptop_urls }),
   });
 
   const body = await res.text();
-  const data = body ? JSON.parse(body) : {};
+  let data = {};
+  try {
+    data = body ? JSON.parse(body) : {};
+  } catch {
+    throw new Error(body?.slice(0, 500) || `Upload failed (${res.status})`);
+  }
   if (!res.ok) {
     throw new Error(data?.error || data?.detail || body || `Upload failed (${res.status})`);
   }
@@ -74,13 +122,12 @@ export async function uploadDocument({ mode, config, documentText, fileText }) {
 async function callOpenRouter({ apiKey, model, context, query, referer, title }) {
   if (!apiKey?.trim()) throw new Error("OpenRouter API key is required.");
 
+  const refererHeader = effectiveOpenRouterReferer(referer);
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${apiKey.trim()}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": referer || "https://cloud-federated-rag.pages.dev",
-      "X-Title": title || "cloud-federated-rag",
     },
     body: JSON.stringify({
       model,
@@ -93,10 +140,18 @@ async function callOpenRouter({ apiKey, model, context, query, referer, title })
   });
 
   const raw = await res.text();
-  const data = raw ? JSON.parse(raw) : {};
-  if (!res.ok) throw new Error(data?.error?.message || raw || `OpenRouter error (${res.status})`);
+  let data = {};
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(raw?.slice(0, 600) || `OpenRouter error (${res.status})`);
+  }
 
-  const answer = data?.choices?.[0]?.message?.content || "No response";
+  if (!res.ok) {
+    throw new Error(openRouterErrorMessage(data, raw, res.status));
+  }
+
+  const answer = normalizeAssistantContent(data?.choices?.[0]?.message) || "No response";
   const usage = data?.usage || {};
   return {
     answer,
@@ -128,9 +183,17 @@ async function callGemini({ apiKey, model, context, query, apiBase }) {
   });
 
   const raw = await res.text();
-  const data = raw ? JSON.parse(raw) : {};
+  let data = {};
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(raw?.slice(0, 600) || `Gemini error (${res.status})`);
+  }
+
   if (!res.ok) {
-    const msg = data?.error?.message || raw || `Gemini error (${res.status})`;
+    const err = data?.error;
+    const msg =
+      (typeof err === "string" && err) || err?.message || raw?.slice(0, 600) || `Gemini error (${res.status})`;
     throw new Error(msg);
   }
 
@@ -157,18 +220,30 @@ export async function queryRag({ mode, config, query, llmProvider, model }) {
   const searchStart = performance.now();
   const res = await fetch(`${base}/process-query`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: orchestratorHeaders(base),
     body: JSON.stringify({ query: query.trim(), laptop_urls, top_k: 5 }),
   });
 
   const raw = await res.text();
-  const data = raw ? JSON.parse(raw) : {};
+  let data = {};
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(raw?.slice(0, 500) || `Query failed (${res.status})`);
+  }
   if (!res.ok) {
-    throw new Error(data?.error || data?.detail || raw || `Query failed (${res.status})`);
+    const parts = [data?.error, data?.detail, data?.hint].filter(Boolean);
+    throw new Error(parts.join(" — ") || raw || `Query failed (${res.status})`);
   }
 
   const chunks = data?.chunks || [];
   if (!chunks.length) {
+    const laptopIds = (data?.laptop_results || []).flatMap((r) => r.chunk_ids || []);
+    if (laptopIds.length) {
+      throw new Error(
+        "Laptops found chunks, but the orchestrator returned no chunk text. For cloud: check Worker Supabase key/RLS; for local: check SQLite IDs match laptop search."
+      );
+    }
     throw new Error("No relevant chunks found. Upload and process a document first.");
   }
 

@@ -103,6 +103,77 @@ embeddings_cache_cpu = {}
 embeddings_cache_gpu = None  # Will be a single tensor on GPU
 chunk_ids_list = []  # Keep track of chunk IDs in order
 
+
+def _sentence_embedding_dim() -> int:
+    if hasattr(embedding_model, "get_sentence_embedding_dimension"):
+        try:
+            return int(embedding_model.get_sentence_embedding_dimension())
+        except Exception:
+            pass
+    return EMBEDDING_DIM
+
+
+def _coerce_embedding_row(raw, chunk_id=None):
+    """Return float32 (D,) or None if length does not match the active model."""
+    try:
+        arr = np.asarray(raw, dtype=np.float32).reshape(-1)
+    except (ValueError, TypeError):
+        return None
+    dim = _sentence_embedding_dim()
+    if arr.size != dim:
+        print(
+            f"   ⚠ Skipping chunk_id={chunk_id}: embedding length {arr.size}, expected {dim} "
+            "(mixed models, old DB rows, or bad Supabase vector format)"
+        )
+        return None
+    return arr
+
+
+def rebuild_gpu_embedding_cache():
+    """
+    Stack embeddings_cache_cpu into embeddings_cache_gpu (CUDA only).
+    Drops ragged / wrong-dimension vectors so np.stack never fails.
+    """
+    global embeddings_cache_gpu, chunk_ids_list
+    import time
+
+    t0 = time.time()
+    if device != "cuda":
+        embeddings_cache_gpu = None
+        chunk_ids_list = list(sorted(embeddings_cache_cpu.keys()))
+        return time.time() - t0, 0
+
+    if len(embeddings_cache_cpu) == 0:
+        embeddings_cache_gpu = None
+        chunk_ids_list = []
+        return time.time() - t0, 0
+
+    rows = []
+    ids_order = []
+    stale_keys = []
+
+    for chunk_id in sorted(embeddings_cache_cpu.keys()):
+        vec = _coerce_embedding_row(embeddings_cache_cpu[chunk_id], chunk_id=chunk_id)
+        if vec is None:
+            stale_keys.append(chunk_id)
+            continue
+        rows.append(vec)
+        ids_order.append(chunk_id)
+
+    for k in stale_keys:
+        del embeddings_cache_cpu[k]
+
+    if not rows:
+        embeddings_cache_gpu = None
+        chunk_ids_list = []
+        return time.time() - t0, 0
+
+    chunk_ids_list = ids_order
+    mat = np.stack(rows, axis=0)
+    embeddings_cache_gpu = torch.tensor(mat, device=device, dtype=torch.float32)
+    return time.time() - t0, len(chunk_ids_list)
+
+
 # Request models
 class GenerateEmbeddingsRequest(BaseModel):
     chunk_ids: List[int]
@@ -251,8 +322,9 @@ async def generate_embeddings(request: GenerateEmbeddingsRequest):
                 chunk_id, embedding_list, success = future.result()
                 if success:
                     successful_count += 1
-                    # Cache locally (CPU for Supabase compatibility)
-                    embeddings_cache_cpu[chunk_id] = np.array(embedding_list)
+                    vec = _coerce_embedding_row(embedding_list, chunk_id=chunk_id)
+                    if vec is not None:
+                        embeddings_cache_cpu[chunk_id] = vec
                 else:
                     failed_chunks.append(chunk_id)
                 processed_count += 1
@@ -270,7 +342,9 @@ async def generate_embeddings(request: GenerateEmbeddingsRequest):
                             supabase.table(SUPABASE_TABLE).update({
                                 'embedding': embedding
                             }).eq('id', chunk_id).execute()
-                            embeddings_cache_cpu[chunk_id] = np.array(embedding)
+                            v = _coerce_embedding_row(embedding, chunk_id=chunk_id)
+                            if v is not None:
+                                embeddings_cache_cpu[chunk_id] = v
                             retry_success += 1
                             break
                         except Exception as e:
@@ -282,23 +356,12 @@ async def generate_embeddings(request: GenerateEmbeddingsRequest):
         
         store_time = time.time() - store_start
         
-        # Rebuild GPU cache tensor for fast search
-        gpu_cache_start = time.time()
         global embeddings_cache_gpu, chunk_ids_list
-        if device == "cuda" and len(embeddings_cache_cpu) > 0:
-            # Convert all embeddings to GPU tensor
-            all_embeddings = []
-            chunk_ids_list = []
-            for chunk_id in sorted(embeddings_cache_cpu.keys()):
-                chunk_ids_list.append(chunk_id)
-                all_embeddings.append(embeddings_cache_cpu[chunk_id])
-            
-            # Stack into single tensor and move to GPU (ensure float32 dtype)
-            embeddings_cache_gpu = torch.tensor(np.array(all_embeddings), device=device, dtype=torch.float32)
-            gpu_cache_time = time.time() - gpu_cache_start
-            print(f"Built GPU cache tensor in {gpu_cache_time:.2f}s ({len(chunk_ids_list)} embeddings)")
-        else:
-            gpu_cache_time = 0
+        gpu_cache_time, n_gpu = rebuild_gpu_embedding_cache()
+        if device == "cuda" and n_gpu > 0:
+            print(f"Built GPU cache tensor in {gpu_cache_time:.2f}s ({n_gpu} embeddings)")
+        elif device != "cuda":
+            gpu_cache_time = 0.0
         
         total_time = time.time() - start_time
         
@@ -359,22 +422,13 @@ async def generate_embeddings_local(request: GenerateEmbeddingsLocalRequest):
 
         store_time = 0.0
 
-        gpu_cache_start = time.time()
         global embeddings_cache_gpu, chunk_ids_list
-        if device == "cuda" and len(embeddings_cache_cpu) > 0:
-            all_embeddings = []
-            chunk_ids_list = []
-            for chunk_id in sorted(embeddings_cache_cpu.keys()):
-                chunk_ids_list.append(chunk_id)
-                all_embeddings.append(embeddings_cache_cpu[chunk_id])
-            embeddings_cache_gpu = torch.tensor(
-                np.array(all_embeddings), device=device, dtype=torch.float32
-            )
-            gpu_cache_time = time.time() - gpu_cache_start
+        gpu_cache_time, n_gpu = rebuild_gpu_embedding_cache()
+        if device == "cuda" and n_gpu > 0:
             print(
-                f"Built GPU cache tensor in {gpu_cache_time:.2f}s ({len(chunk_ids_list)} embeddings)"
+                f"Built GPU cache tensor in {gpu_cache_time:.2f}s ({n_gpu} embeddings)"
             )
-        else:
+        elif device != "cuda":
             gpu_cache_time = 0.0
 
         total_time = time.time() - start_time
@@ -436,20 +490,15 @@ async def search_chunks(request: SearchChunksRequest):
 
                 for row in response.data:
                     if row["embedding"]:
-                        embeddings_cache_cpu[row["id"]] = np.array(row["embedding"])
+                        vec = _coerce_embedding_row(
+                            row["embedding"], chunk_id=row.get("id")
+                        )
+                        if vec is not None:
+                            embeddings_cache_cpu[row["id"]] = vec
 
-                if device == "cuda" and len(embeddings_cache_cpu) > 0:
-                    all_embeddings = []
-                    chunk_ids_list = []
-                    for chunk_id in sorted(embeddings_cache_cpu.keys()):
-                        chunk_ids_list.append(chunk_id)
-                        all_embeddings.append(embeddings_cache_cpu[chunk_id])
-                    embeddings_cache_gpu = torch.tensor(
-                        np.array(all_embeddings), device=device, dtype=torch.float32
-                    )
-                    print(
-                        f"Built GPU cache tensor ({len(chunk_ids_list)} embeddings)"
-                    )
+                _, n_gpu = rebuild_gpu_embedding_cache()
+                if device == "cuda" and n_gpu > 0:
+                    print(f"Built GPU cache tensor ({n_gpu} embeddings)")
 
                 load_time = time.time() - load_start
                 print(
